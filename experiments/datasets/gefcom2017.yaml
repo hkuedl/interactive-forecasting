@@ -1,0 +1,13 @@
+id: gefcom2017
+version: public-csv-v1
+file_glob: '*_merged.csv'
+file_suffix: _merged.csv
+series_pattern: ^(aggregate_I[0-9]+|mid_level_E[0-9]+)$
+timestamp: datetime
+load: load
+# The released column is already the station-averaged temperature.
+temperature: temperature
+other:
+  humidity: humidity
+frequency: 1h
+missing_timestamps: causal_forward_fill

@@ -1,0 +1,24 @@
+.env
+*.sqlite3
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+docs/
+codex_reference/
+tests/
+runtime_data/
+artifacts/
+experiments/output/
+src/interactive_forecasting/agents/skills/
+*.log
+*.orig
+key
+
+# Local smoke check
+scripts/smoke_preparation_agents.py

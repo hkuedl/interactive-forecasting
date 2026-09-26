@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=59.6"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interactive-forecasting"
+version = "0.1.0"
+description = "Interactive load forecasting foundation"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2,<3",
+  "pydantic-settings>=2,<3",
+  "SQLAlchemy>=2,<3",
+]
+
+[project.optional-dependencies]
+backend = ["fastapi>=0.100", "uvicorn>=0.20", "alembic>=1.10"]
+llm = ["openai-agents>=0.1"]
+dev = ["pytest>=8", "httpx>=0.25", "ruff>=0.8", "mypy>=1.10"]
+forecasting = ["numpy", "pandas", "scikit-learn", "xgboost", "torch", "joblib"]
+optimization = ["optuna"]
+preparation = ["numpy", "pandas", "python-multipart", "pyarrow"]
+ml = ["numpy", "pandas", "scipy", "scikit-learn", "xgboost", "optuna", "torch", "joblib"]
+experiments = ["PyYAML>=6", "numpy", "pandas", "scikit-learn", "xgboost", "torch", "optuna", "openai-agents", "joblib"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"interactive_forecasting.agents" = ["skills/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["interactive_forecasting"]
+ignore_missing_imports = true
+check_untyped_defs = true

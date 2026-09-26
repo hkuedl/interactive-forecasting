@@ -1,0 +1,14 @@
+id: gefcom2012
+version: public-csv-v1
+file_glob: zone_*_with_temp.csv
+file_suffix: _with_temp.csv
+series_pattern: ^zone_[0-9]+$
+timestamp: datetime
+load: load
+# The released column is already an average of available weather stations.
+temperature: avg_temperature
+other: {}
+frequency: 1h
+missing_timestamps: causal_forward_fill
+aggregate_exclude:
+  - zone_9

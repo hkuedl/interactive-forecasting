@@ -1,0 +1,11 @@
+id: gefcom2014
+version: public-csv-v1
+file_glob: GEF14.csv
+file_suffix: .csv
+series_pattern: ^GEF14$
+timestamp: DateTime
+load: load
+temperature: T
+other: {}
+frequency: 1h
+missing_timestamps: error

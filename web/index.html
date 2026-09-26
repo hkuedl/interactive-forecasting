@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Interactive Forecasting · Preparation</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/deployment_paper_demo.css">
+  <script>window.IFORECAST_PAPER_DEMO = new URLSearchParams(location.search).has("paper-demo");</script>
+  <script src="/static/app.js" defer></script>
+  <script src="/static/training.js" defer></script>
+  <script src="/static/deployment.js" defer></script>
+  <script src="/static/deployment_paper_demo.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="brandmark">IF</span><strong>Interactive Forecasting</strong><span class="divider"></span><span id="task-id">New task</span><button id="new-task" class="header-action" type="button">New task</button><button id="open-task" class="header-action" type="button">Open task</button></div>
+    <div class="status"><span id="stage-badge">Preparation</span><span id="workflow-status">Loading…</span><span id="deployment-status"></span></div>
+  </header>
+  <div class="shell">
+    <nav class="stage-nav" aria-label="Research stages">
+      <p class="eyebrow">WORKSPACE</p>
+      <button class="stage active" type="button" id="preparation-nav">01 <span>Preparation</span></button>
+      <button class="stage" type="button" id="training-nav" disabled>02 <span>Training &amp; Evaluation</span></button>
+      <button class="stage" type="button" id="deployment-nav" disabled>03 <span>Deployment</span></button>
+      <div class="nav-note">Prepare and confirm a dataset before any model search begins.</div>
+    </nav>
+    <main>
+      <div class="page-heading"><div><p class="eyebrow">STAGE 01</p><h1>Dataset preparation</h1><p>Map your data, review quality, and freeze the forecasting task.</p></div><div id="step-pill" class="pill">Upload dataset</div></div>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <div id="training-workspace" hidden>
+        <section class="card" id="run-setup-section">
+          <div class="card-head"><h2>Search run setup</h2><span class="section-number">01</span></div>
+          <p>Use the frozen prepared task and supply an explicit scientific search protocol. No sampler budget, origin schedule, or model template is inferred.</p>
+          <div id="run-setup-content"></div>
+        </section>
+        <section class="card" id="optimization-overview-section">
+          <div class="card-head"><h2>Optimization overview</h2><span class="section-number">02</span></div>
+          <div id="optimization-summary"></div>
+          <div id="optimization-controls"></div>
+          <div id="optimization-progress"></div>
+          <div id="optimization-family"></div>
+        </section>
+        <section class="card" id="optimization-guidance-section">
+          <div class="card-head"><h2>Search guidance</h2><span class="section-number">03</span></div>
+          <div id="optimization-guidance"></div>
+        </section>
+        <section class="card" id="optimization-diagnostics-section">
+          <div class="card-head"><h2>Research diagnostics</h2><span class="section-number">04</span></div>
+          <div id="optimization-diagnostics"></div>
+        </section>
+        <section class="card" id="optimization-trials-section">
+          <div class="card-head"><h2>Trial details</h2><span class="section-number">05</span></div>
+          <div id="optimization-trials"></div>
+          <div id="optimization-trial-detail"></div>
+        </section>
+      </div>
+      <div id="deployment-workspace" hidden>
+        <section class="card" id="deployment-summary-section"><div class="card-head"><h2>Forecast summary</h2><span class="section-number">01</span></div><div id="deployment-summary"></div><div id="deployment-setup"></div></section>
+        <section class="card" id="deployment-forecast-section"><div class="card-head"><h2>Target-day forecast</h2><span class="section-number">02</span></div><div id="deployment-forecast"></div></section>
+        <section class="card" id="deployment-calendar-section"><div class="card-head"><h2>Calendar references</h2><span class="section-number">03</span></div><div id="deployment-calendar"></div></section>
+        <section class="card" id="deployment-weather-section"><div class="card-head"><h2>Weather analogs</h2><span class="section-number">04</span></div><div id="deployment-weather"></div></section>
+        <section class="card" id="deployment-adjustment-section"><div class="card-head"><h2>Adjustments</h2><span class="section-number">05</span></div><div id="deployment-adjustment"></div></section>
+        <section class="card" id="deployment-versions-section"><div class="card-head"><h2>Forecast version history</h2><span class="section-number">06</span></div><div id="deployment-versions"></div></section>
+        <section class="card" id="deployment-sensitivity-section"><div class="card-head"><h2>Sensitivity analysis</h2><span class="section-number">07</span></div><div id="deployment-sensitivity"></div></section>
+      </div>
+      <section class="card" id="upload-section"><div class="card-head"><h2>Dataset upload</h2><span class="section-number">01</span></div><p>CSV or Parquet, up to 32 MiB. Your original file remains unchanged.</p><label id="drop-zone" class="drop-zone" for="dataset-file"><span>Drop a file here or browse</span><small>CSV · Parquet</small></label><input id="dataset-file" type="file" accept=".csv,.parquet"><button id="upload-button" class="primary" type="button">Upload dataset</button><p id="upload-state" class="meta"></p></section>
+      <section class="card" id="schema-section"><div class="card-head"><h2>Schema inspection</h2><span class="section-number">02</span></div><div id="schema-content" class="empty">Upload a dataset to inspect its columns.</div><div id="schema-action"></div></section>
+      <section class="card" id="mapping-section"><div class="card-head"><h2>Column mapping</h2><span class="section-number">03</span></div><p>Confirm time, load, and whether temperature is present. Other features are optional.</p><div id="mapping-content" class="empty">A mapping proposal will appear after inspection.</div><div id="mapping-action"></div></section>
+      <section class="card" id="quality-section"><div class="card-head"><h2>Data quality</h2><span class="section-number">04</span></div><div id="quality-content" class="empty">Quality diagnostics require a confirmed mapping.</div><div id="quality-action"></div></section>
+      <section class="card" id="plan-section"><div class="card-head"><h2>Preparation decisions</h2><span class="section-number">05</span></div><div id="plan-content" class="empty">Cleaning decisions will appear after quality analysis.</div><div id="plan-action"></div></section>
+      <section class="card" id="overview-section"><div class="card-head"><h2>Dataset summary &amp; visualizations</h2><span class="section-number">06</span></div><div id="overview-content" class="empty">Prepared dataset summaries and charts will appear here.</div><div id="overview-action"></div></section>
+      <section class="card" id="task-section"><div class="card-head"><h2>Forecast task configuration</h2><span class="section-number">07</span></div><div id="task-content" class="empty">Configure the forecast after preparing the dataset.</div><div id="task-action"></div></section>
+      <section class="card" id="review-section"><div class="card-head"><h2>Final review</h2><span class="section-number">08</span></div><div id="review-content" class="empty">The complete preparation review will appear here.</div><div id="review-action"></div></section>
+    </main>
+    <aside class="manager"><div class="manager-head"><span class="avatar">TM</span><div><strong>Task Manager</strong><small id="manager-subtitle">Preparation guidance</small></div></div><div class="manager-status" id="manager-status">Preparing workspace…</div><div id="conversation" class="conversation" aria-live="polite"></div><form id="chat-form"><label for="chat-input" id="chat-label">Ask or correct a mapping</label><textarea id="chat-input" rows="3" placeholder="Use T2 as temperature."></textarea><button type="submit" class="primary">Send</button></form></aside>
+  </div>
+</body>
+</html>
