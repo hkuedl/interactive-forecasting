@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "interactive-forecasting"
 version = "0.1.0"
-description = "Interactive load forecasting foundation"
+description = "Interactive load forecasting application"
 requires-python = ">=3.10"
 dependencies = [
   "pydantic>=2,<3",

@@ -1,6 +1,6 @@
 # Interactive Forecasting
 
-Codes for reseach paper titled **“Large Language Model-Empowered Interactive Load Forecasting”** by Yu Zuo, Dalin Qin, and Yi Wang.
+Code for the research paper titled **“Large Language Model-Empowered Interactive Load Forecasting”** by Yu Zuo, Dalin Qin, and Yi Wang.
 
 This repository provides an interactive load forecasting framework that connects large language models (LLMs), forecasting models, automated configuration search, and human expertise through a multi-agent workflow. Users interact with the system in natural language to prepare forecasting tasks, guide model optimization, inspect intermediate results, and refine deployed forecasts.
 

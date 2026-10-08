@@ -9,27 +9,5 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-docs/
-codex_reference/
-tests/
-runtime_data/
-artifacts/
-experiments/output/
-src/interactive_forecasting/agents/skills/*
-!src/interactive_forecasting/agents/skills/preparation_v5.md
-!src/interactive_forecasting/agents/skills/model_manager_v1.md
-!src/interactive_forecasting/agents/skills/deployment_v2.md
 *.log
 *.orig
-key
-
-# Local smoke check
-scripts/smoke_preparation_agents.py
-
-# Local developer and demo figure scripts
-scripts/
-
-# Local paper figure assets
-web/deployment_paper_demo.js
-web/deployment_paper_demo.css
-data/examples/deployment_paper_demo.json
