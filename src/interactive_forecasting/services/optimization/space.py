@@ -28,7 +28,7 @@ from interactive_forecasting.domain.search import (
 from interactive_forecasting.domain.types import ModelFamily
 from interactive_forecasting.services.models.core import ModelRegistry
 
-_RESEARCH_ROOT = Path(__file__).resolve().parents[4] / "codex_reference" / "experiments" / "specs"
+_RESEARCH_ROOT = Path(__file__).resolve().parent / "specs"
 
 
 def _domain(
@@ -121,7 +121,7 @@ def canonical_research_space(spec_root: Path = _RESEARCH_ROOT) -> SearchSpace:
     )
     return SearchSpace(
         version=f"table-03-04-{source_digest[:12]}",
-        provenance="codex_reference/experiments/specs/table_03,table_04",
+        provenance="packaged research specs/table_03,table_04",
         families=tuple(families),
         features=features,
     )

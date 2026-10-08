@@ -1,0 +1,62 @@
+{
+  "id": "table_04",
+  "type": "config_export",
+  "feature_groups": {
+    "calendar_features": [
+      "none",
+      "numerical",
+      "categorical",
+      "trigonometric"
+    ],
+    "temperature_lag_values": {
+      "choices": [
+        "none",
+        "correlation"
+      ],
+      "top_ratio": [
+        0,
+        1
+      ]
+    },
+    "calendar_temperature_interaction": [
+      "none",
+      "all"
+    ],
+    "load_lag_regression": {
+      "choices": [
+        "none",
+        "correlation",
+        "fixed"
+      ],
+      "top_ratio": [
+        0,
+        1
+      ]
+    },
+    "historical_load_sequence": {
+      "frequency": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        12,
+        24
+      ],
+      "length": [
+        1,
+        24
+      ]
+    },
+    "other_features": {
+      "choices": [
+        "none",
+        "correlation"
+      ],
+      "top_ratio": [
+        0,
+        1
+      ]
+    }
+  }
+}

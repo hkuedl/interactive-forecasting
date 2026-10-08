@@ -441,7 +441,7 @@ $("chat-form").onsubmit = event => {
     $("chat-input").value = "";
   });
 };
-if (!window.IFORECAST_PAPER_DEMO) work(async () => {
+work(async () => {
   if (taskId) {
     try { await request(`/tasks/${taskId}`); }
     catch { taskId = null; }

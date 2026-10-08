@@ -1,0 +1,139 @@
+{
+  "id": "table_03",
+  "type": "config_export",
+  "models": {
+    "Linear": {
+      "regularization": [
+        "none",
+        "ridge"
+      ],
+      "alpha": {
+        "low": 0.0001,
+        "high": 1,
+        "sampling": "log"
+      }
+    },
+    "SVR": {
+      "C": {
+        "low": 0.001,
+        "high": 1000,
+        "sampling": "log"
+      },
+      "gamma": {
+        "low": 0.001,
+        "high": 1000,
+        "sampling": "log"
+      }
+    },
+    "MLP": {
+      "hidden_layers": {
+        "low": 2,
+        "high": 5,
+        "step": 1
+      },
+      "hidden_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "learning_rate": {
+        "low": 0.0001,
+        "high": 0.1,
+        "sampling": "log"
+      },
+      "dropout": {
+        "low": 0,
+        "high": 0.5,
+        "sampling": "uniform"
+      }
+    },
+    "XGBoost": {
+      "n_estimators": {
+        "low": 10,
+        "high": 300,
+        "step": 10
+      },
+      "max_depth": {
+        "low": 4,
+        "high": 16,
+        "step": 2
+      },
+      "learning_rate": {
+        "low": 0.0001,
+        "high": 0.1,
+        "sampling": "log"
+      }
+    },
+    "LSTM": {
+      "layers": {
+        "low": 1,
+        "high": 3,
+        "step": 1
+      },
+      "hidden_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "fc_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "learning_rate": {
+        "low": 0.0001,
+        "high": 0.1,
+        "sampling": "log"
+      }
+    },
+    "GRU": {
+      "layers": {
+        "low": 1,
+        "high": 3,
+        "step": 1
+      },
+      "hidden_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "fc_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "learning_rate": {
+        "low": 0.0001,
+        "high": 0.1,
+        "sampling": "log"
+      }
+    },
+    "CNN": {
+      "layers": {
+        "low": 1,
+        "high": 3,
+        "step": 1
+      },
+      "kernel_size": {
+        "low": 1,
+        "high": 5,
+        "step": 1
+      },
+      "filters": {
+        "low": 16,
+        "high": 128,
+        "sampling": "log"
+      },
+      "fc_size": {
+        "low": 16,
+        "high": 512,
+        "sampling": "log"
+      },
+      "learning_rate": {
+        "low": 0.0001,
+        "high": 0.1,
+        "sampling": "log"
+      }
+    }
+  }
+}

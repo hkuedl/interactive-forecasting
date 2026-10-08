@@ -27,7 +27,8 @@ experiments = ["PyYAML>=6", "numpy", "pandas", "scikit-learn", "xgboost", "torch
 where = ["src"]
 
 [tool.setuptools.package-data]
-"interactive_forecasting.agents" = ["skills/*.md"]
+"interactive_forecasting.agents" = ["skills/preparation_v5.md", "skills/model_manager_v1.md", "skills/deployment_v2.md"]
+"interactive_forecasting.services.optimization" = ["specs/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
