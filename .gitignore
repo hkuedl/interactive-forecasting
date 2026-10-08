@@ -22,3 +22,6 @@ key
 
 # Local smoke check
 scripts/smoke_preparation_agents.py
+
+# Local developer and demo figure scripts
+scripts/

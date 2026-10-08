@@ -87,15 +87,6 @@ Preparation Assistant for specialist reasoning. Without a configured model and k
 chat returns an unavailable error; workspace controls still work. UI and chat
 confirmations use the same validated application actions.
 
-For an opt-in, small live agent check with isolated synthetic data (no training/search):
-
-```bash
-PYTHONPATH=src python scripts/smoke_preparation_agents.py
-```
-
-The script uses `IFORECAST_OPENAI_MODEL` without selecting a fallback, and prints the
-temporary directory containing SQLite call/message evidence and `report.json`.
-
 ### Datasets
 
 The public experiment package supports three forecasting benchmarks:
