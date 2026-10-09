@@ -177,6 +177,13 @@ class OpenAIAgentsRuntime:
             AgentDecisionTransport if output_schema is AgentDecision else output_schema
         )
         configured = replace(agent, output_type=transport_schema)
+        from interactive_forecasting.agents.optimization_manager import (
+            OPTIMIZATION_MANAGER_PROMPT,
+            OPTIMIZATION_REPLY_PROMPT,
+            ModelDeveloperReport,
+            OptimizationReply,
+            OptimizationRoute,
+        )
         from interactive_forecasting.agents.preparation_manager import (
             PREPARATION_MANAGER_PROMPT,
             PreparationResponse,
@@ -188,10 +195,25 @@ class OpenAIAgentsRuntime:
             PreparationResponse,
         ):
             configured = replace(configured, instructions=PREPARATION_MANAGER_PROMPT)
+        if request.role == Actor.TASK_MANAGER and output_schema is OptimizationRoute:
+            configured = replace(configured, instructions=OPTIMIZATION_MANAGER_PROMPT)
+        if request.role == Actor.TASK_MANAGER and output_schema is OptimizationReply:
+            configured = replace(configured, instructions=OPTIMIZATION_REPLY_PROMPT)
         if request.role == Actor.PREPARATION_ASSISTANT:
             configured = replace(configured, instructions=preparation_instructions())
         elif request.role == Actor.MODEL_MANAGER:
             configured = replace(configured, instructions=model_manager_instructions())
+        elif request.role == Actor.MODEL_DEVELOPER and output_schema is ModelDeveloperReport:
+            configured = replace(
+                configured,
+                instructions=(
+                    "You are Model Developer. Report the completed approved search batch to "
+                    "Model Manager using only the supplied authoritative execution result "
+                    "and validation trial records. Summarize what ran, failures, outcomes, "
+                    "and uncertainty concisely. Do not invent results, choose a new strategy, "
+                    "run tools, or address the user directly."
+                ),
+            )
         elif request.role == Actor.DEPLOYMENT_OPERATOR:
             configured = replace(configured, instructions=deployment_instructions())
         context = (

@@ -109,9 +109,11 @@ async function refresh() {
     (deploymentState?.forecast ? "Forecast ready" : "Ready to forecast") : task.workflow_status;
   $("step-pill").textContent = deployment
     ? (deploymentState?.forecast ?
-      new Intl.DateTimeFormat(undefined, {dateStyle: "medium",
-        timeZone: deploymentState.forecast.origin.timezone_name || "UTC"})
-        .format(new Date(deploymentState.forecast.target_timestamps[0]))
+      (deploymentState.forecast.origin.timezone_name === "source_clock"
+        ? deploymentState.forecast.target_timestamps[0].slice(0, 10)
+        : new Intl.DateTimeFormat(undefined, {dateStyle: "medium",
+          timeZone: deploymentState.forecast.origin.timezone_name || "UTC"})
+          .format(new Date(deploymentState.forecast.target_timestamps[0])))
       : "Set up forecast")
     : training ? (opt?.session.phase || "run setup").replaceAll("_", " ")
     : prep.step.replaceAll("_", " ").toLowerCase();
@@ -127,8 +129,8 @@ async function refresh() {
       ? opt ? `${opt.session.mode} · round ${opt.summary.current_round} · ${opt.session.phase}` : "Preparation frozen · configure a search run"
       : `Current step: ${prep.step.replaceAll("_", " ")}${qualityStatus}`;
   $("manager-subtitle").textContent = deployment ? "Forecast assistance" : training ? "Optimization guidance" : "Preparation guidance";
-  $("chat-label").textContent = deployment ? "Message Task Manager" : training ? "Ask about progress or propose search guidance" : "Ask Task Manager about this preparation";
-  $("chat-input").placeholder = deployment ? "Compare with last week, or reduce after 15:00." : training ? "Prefer LSTM, or describe a search preference." : "Ask why, or request a change…";
+  $("chat-label").textContent = deployment ? "Message Task Manager" : training ? "Discuss results and the next search batch" : "Ask Task Manager about this preparation";
+  $("chat-input").placeholder = deployment ? "Compare with last week, or reduce after 15:00." : training ? "Ask about results, suggest a strategy, or say continue…" : "Ask why, or request a change…";
   render();
   if (training) renderTraining();
   if (deployment) renderDeployment();

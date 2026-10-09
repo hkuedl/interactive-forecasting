@@ -20,7 +20,7 @@ def load_deployment_skill() -> str:
     policy = (
         files("interactive_forecasting.agents")
         .joinpath("skills")
-        .joinpath("deployment_v2.md")
+        .joinpath("deployment.md")
         .read_text(encoding="utf-8")
     )
     if not policy.startswith("# Deployment skill — v2\n"):

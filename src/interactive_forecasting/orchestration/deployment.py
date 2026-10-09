@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from interactive_forecasting.domain.models import (
     Adjustment,
+    AdjustmentImpactPreview,
     AdjustmentProposal,
     ArtifactRef,
     DeploymentReadiness,
@@ -327,7 +328,10 @@ class DeploymentWorkflow:
             != context.historical.to_csv(index=False).encode()
         ):
             raise ValueError("prepared context artifact differs from validated input")
-        prediction = fitted.predict(context.data, forecast_examples(context.origin))
+        prediction = fitted.predict(
+            context.data,
+            forecast_examples(context.origin, str(context.data.frame["series_id"].iloc[-1])),
+        )
         future_artifact = self.store.put_bytes(
             f"deployment/{task_id}/inputs/{uuid4()}.json",
             json.dumps(
@@ -542,6 +546,36 @@ class DeploymentWorkflow:
         )
         self.deployments.save(changed, expected_version=session.version)
         return draft
+
+    def preview_draft(
+        self, task_id: UUID, adjustment_id: UUID, expected_version: int, *, session_id: UUID
+    ) -> AdjustmentImpactPreview:
+        session = self._session(task_id, expected_version, session_id=session_id)
+        draft = self.deployments.adjustment(adjustment_id)
+        if (
+            draft is None
+            or draft.task_id != task_id
+            or draft.status != "draft"
+            or session.pending_adjustment_id != adjustment_id
+            or session.state not in {"ADJUSTMENT_DRAFT_PENDING", "WAITING_FOR_USER_CONFIRMATION"}
+        ):
+            raise ValueError("pending adjustment draft is unavailable for preview")
+        forecast, _session, parent, future, policies = self._adjustment_context(
+            task_id, draft.forecast_id
+        )
+        if draft.parent_version_id != parent.version_id:
+            raise ValueError("preview parent version is stale")
+        calculated = apply_adjustment(
+            forecast, parent, draft, future_values=future, auxiliary_policies=policies
+        )
+        return AdjustmentImpactPreview(
+            adjustment_id=draft.adjustment_id,
+            forecast_id=forecast.forecast_id,
+            parent_version_id=parent.version_id,
+            affected_timestamps=calculated.affected_timestamps,
+            value_changes=calculated.value_changes,
+            prediction=calculated.prediction,
+        )
 
     def reject_draft(
         self, task_id: UUID, adjustment_id: UUID, expected_version: int, *, session_id: UUID

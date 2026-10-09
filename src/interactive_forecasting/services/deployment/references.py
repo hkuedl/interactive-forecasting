@@ -20,15 +20,24 @@ from interactive_forecasting.domain.models import (
     ReferenceDay,
     WeatherAnalog,
 )
+from interactive_forecasting.services.data.core import SOURCE_CLOCK
 from interactive_forecasting.services.deployment.postprocessing import _external_at
 from interactive_forecasting.storage.artifacts import ArtifactStore
 
 
 def _day_times(day: date, timezone_name: str, frequency: str) -> tuple[pd.Timestamp, ...]:
+    if timezone_name == SOURCE_CLOCK:
+        return tuple(pd.date_range(day, day + timedelta(days=1), freq=frequency, inclusive="left"))
     zone = ZoneInfo(timezone_name)
     start = pd.Timestamp(day).tz_localize(zone)
     end = pd.Timestamp(day + timedelta(days=1)).tz_localize(zone)
     return tuple(pd.date_range(start, end, freq=frequency, inclusive="left").tz_convert("UTC"))
+
+
+def _calendar_date(timestamp: pd.Timestamp, timezone_name: str) -> date:
+    if timezone_name == SOURCE_CLOCK:
+        return timestamp.date()
+    return timestamp.tz_convert(timezone_name).date()
 
 
 def analyze_references(
@@ -47,22 +56,24 @@ def analyze_references(
     if tuple(snapshot.columns) != tuple(context.columns):
         raise ValueError("historical snapshot and deployment context schema differ")
     history = pd.concat((snapshot, context), ignore_index=True)
-    history["timestamp"] = pd.to_datetime(history["timestamp"], utc=True)
+    history["timestamp"] = pd.to_datetime(
+        history["timestamp"], utc=forecast.origin.timezone_name != SOURCE_CLOCK
+    )
     history = history.loc[
         history["timestamp"] <= pd.Timestamp(forecast.origin.latest_observed_at)
     ].drop_duplicates(["series_id", "timestamp"], keep="last")
-    if set(history["series_id"]) != {"default"}:
+    if set(history["series_id"]) != {forecast.prediction.keys[0].series_id}:
         raise ValueError("reference analysis supports the frozen single series only")
     history = history.set_index("timestamp").sort_index()
     future = tuple(
         FutureAuxiliaryValue.model_validate(item)
         for item in json.loads(store.read_bytes(forecast.future_auxiliary_artifact))
     )
-    target_date = (
-        pd.Timestamp(forecast.target_timestamps[0]).tz_convert(forecast.origin.timezone_name).date()
+    target_date = _calendar_date(
+        pd.Timestamp(forecast.target_timestamps[0]), forecast.origin.timezone_name
     )
     if any(
-        pd.Timestamp(target).tz_convert(forecast.origin.timezone_name).date() != target_date
+        _calendar_date(pd.Timestamp(target), forecast.origin.timezone_name) != target_date
         for target in forecast.target_timestamps
     ):
         raise ValueError("reference analysis currently requires targets on one local date")
@@ -126,9 +137,9 @@ def analyze_references(
             target_weather = tuple(readings)
             available_days = sorted(
                 {
-                    stamp.tz_convert(forecast.origin.timezone_name).date()
+                    _calendar_date(stamp, forecast.origin.timezone_name)
                     for stamp in history.index
-                    if stamp.tz_convert(forecast.origin.timezone_name).date() < target_date
+                    if _calendar_date(stamp, forecast.origin.timezone_name) < target_date
                 }
             )
             candidates = []

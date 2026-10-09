@@ -21,7 +21,7 @@ def load_preparation_skill() -> str:
     policy = (
         files("interactive_forecasting.agents")
         .joinpath("skills")
-        .joinpath("preparation_v5.md")
+        .joinpath("preparation.md")
         .read_text(encoding="utf-8")
     )
     if not policy.startswith("# Preparation skill — v5\n"):

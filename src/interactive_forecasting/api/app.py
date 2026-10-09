@@ -20,6 +20,7 @@ from interactive_forecasting.config import Settings
 from interactive_forecasting.domain.forecasting import OriginSchedule, ResolvedCandidate
 from interactive_forecasting.domain.models import (
     Adjustment,
+    AdjustmentImpactPreview,
     AdjustmentProposal,
     DeploymentReadiness,
     DeploymentSession,
@@ -496,6 +497,26 @@ def create_app(
         await container.optimization.resume(task_id, request.expected_version)
         return optimization_state(task_id)
 
+    @app.post(
+        "/tasks/{task_id}/optimization/plan/approve", response_model=OptimizationStateResponse
+    )
+    def approve_optimization_plan(
+        task_id: UUID, request: VersionedAction
+    ) -> OptimizationStateResponse:
+        assert container.optimization is not None
+        container.optimization.approve_plan_restrictions(task_id, request.expected_version)
+        return optimization_state(task_id)
+
+    @app.post(
+        "/tasks/{task_id}/optimization/plan/discard", response_model=OptimizationStateResponse
+    )
+    def discard_optimization_plan(
+        task_id: UUID, request: VersionedAction
+    ) -> OptimizationStateResponse:
+        assert container.optimization is not None
+        container.optimization.discard_plan_restrictions(task_id, request.expected_version)
+        return optimization_state(task_id)
+
     @app.post("/tasks/{task_id}/optimization/cancel", response_model=OptimizationStateResponse)
     def cancel_optimization(task_id: UUID, request: VersionedAction) -> OptimizationStateResponse:
         assert container.optimization is not None
@@ -705,6 +726,18 @@ def create_app(
     ) -> Adjustment:
         assert container.deployment is not None
         return container.deployment.validate_draft(
+            task_id, adjustment_id, request.expected_version, session_id=request.session_id
+        )
+
+    @app.post(
+        "/tasks/{task_id}/deployment/adjustments/{adjustment_id}/preview",
+        response_model=AdjustmentImpactPreview,
+    )
+    def preview_adjustment(
+        task_id: UUID, adjustment_id: UUID, request: DeploymentAction
+    ) -> AdjustmentImpactPreview:
+        assert container.deployment is not None
+        return container.deployment.preview_draft(
             task_id, adjustment_id, request.expected_version, session_id=request.session_id
         )
 

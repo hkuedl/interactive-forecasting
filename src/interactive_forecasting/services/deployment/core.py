@@ -16,6 +16,7 @@ from interactive_forecasting.domain.models import (
 )
 from interactive_forecasting.domain.preparation import PreparedSnapshot
 from interactive_forecasting.services.data.core import (
+    SOURCE_CLOCK,
     ForecastExample,
     ForecastIndex,
     NormalizedSeries,
@@ -57,6 +58,17 @@ class PreparedDeploymentContext:
     historical: pd.DataFrame
     origin: ForecastOrigin
     validation: DeploymentValidation
+
+
+def _clock_timestamp(value: object, timezone_name: str) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timezone_name == SOURCE_CLOCK:
+        if timestamp.tzinfo is not None:
+            raise ValueError("source-clock timestamps must not carry timezone offsets")
+        return timestamp
+    if timestamp.tzinfo is None:
+        raise ValueError("zoned deployment timestamps must include timezone offsets")
+    return timestamp.tz_convert("UTC")
 
 
 def required_history(recipe: CoreFeatureRecipe, index: ForecastIndex) -> dict[str, tuple[int, ...]]:
@@ -145,8 +157,23 @@ def prepare_context(
         frequency_override=snapshot.frequency,
     )
     stored = pd.read_csv(BytesIO(store.read_bytes(snapshot.artifact)))
-    stored["timestamp"] = pd.to_datetime(stored["timestamp"], utc=True)
-    new_frame["timestamp"] = pd.to_datetime(new_frame["timestamp"], utc=True)
+    series_ids = set(stored["series_id"])
+    if len(series_ids) != 1:
+        raise ValueError("deployment requires one frozen series")
+    series_id = snapshot.series_id or next(iter(series_ids))
+    if series_ids != {series_id}:
+        raise ValueError("prepared snapshot series ID differs from frozen metadata")
+    new_frame["series_id"] = series_id
+    stored["timestamp"] = pd.to_datetime(
+        stored["timestamp"], utc=snapshot.timezone_name != SOURCE_CLOCK
+    )
+    new_frame["timestamp"] = pd.to_datetime(
+        new_frame["timestamp"], utc=snapshot.timezone_name != SOURCE_CLOCK
+    )
+    if snapshot.timezone_name != SOURCE_CLOCK:
+        # Keep the declared local offset for the existing normalized-series validation.
+        stored["timestamp"] = stored["timestamp"].dt.tz_convert(snapshot.timezone_name)
+        new_frame["timestamp"] = new_frame["timestamp"].dt.tz_convert(snapshot.timezone_name)
     if new_frame["timestamp"].min() <= stored["timestamp"].max():
         raise ValueError(
             "deployment observations must follow the prepared snapshot without overlap"
@@ -210,7 +237,9 @@ def prepare_context(
                     missing_aux.append(f"{column}@{when.isoformat()}: not yet available")
     future: dict[tuple[str, pd.Timestamp], FutureAuxiliaryValue] = {}
     for value in future_values:
-        key = (value.column, pd.Timestamp(value.valid_at).tz_convert("UTC"))
+        key = (value.column, _clock_timestamp(value.valid_at, snapshot.timezone_name))
+        if value.available_at is not None:
+            _clock_timestamp(value.available_at, snapshot.timezone_name)
         if key in future:
             raise ValueError("duplicate future auxiliary value")
         if key[1] <= origin_time:
@@ -272,11 +301,13 @@ def prepare_context(
     return PreparedDeploymentContext(data, context_frame, origin, validation)
 
 
-def forecast_examples(origin: ForecastOrigin) -> tuple[ForecastExample, ...]:
+def forecast_examples(
+    origin: ForecastOrigin, series_id: str = "default"
+) -> tuple[ForecastExample, ...]:
     return tuple(
         ForecastExample(
             ForecastKey(
-                series_id="default",
+                series_id=series_id,
                 origin=origin.latest_observed_at,
                 target=target,
             ),

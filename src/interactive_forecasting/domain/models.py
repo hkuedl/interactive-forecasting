@@ -42,6 +42,10 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _one_clock_mode(values: tuple[datetime, ...]) -> bool:
+    return len({value.tzinfo is None for value in values}) <= 1
+
+
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -76,11 +80,19 @@ class TaskDefinition(Record):
     metric_spec: MetricSpec | None = None
     forecast_output: OutputConfig = Field(default_factory=OutputConfig)
     auxiliary_policies: dict[str, AuxiliaryPolicy] = Field(default_factory=dict)
-    target_range_start: AwareDatetime | None = None
-    target_range_end: AwareDatetime | None = None
+    target_range_start: ClockDatetime | None = None
+    target_range_end: ClockDatetime | None = None
 
     @model_validator(mode="after")
     def metric_matches_task(self) -> "TaskDefinition":
+        clock_values = tuple(
+            value for value in (self.target_range_start, self.target_range_end) if value is not None
+        )
+        if not _one_clock_mode(clock_values) or any(
+            (value.tzinfo is None) != (self.timezone_name == "source_clock")
+            for value in clock_values
+        ):
+            raise ValueError("task target range must match the declared clock mode")
         if self.metric_spec is not None and (
             self.objective_id != self.metric_spec.objective_id
             or (
@@ -232,8 +244,8 @@ class ForecastOrigin(Record):
     task_id: UUID
     selected_trial_id: UUID
     model_artifact: ArtifactRef
-    latest_observed_at: AwareDatetime
-    targets: tuple[AwareDatetime, ...] = Field(min_length=1)
+    latest_observed_at: ClockDatetime
+    targets: tuple[ClockDatetime, ...] = Field(min_length=1)
     delta: int = Field(gt=0)
     horizon: int = Field(gt=0)
     offset_unit: Literal["samples", "hours"]
@@ -242,6 +254,11 @@ class ForecastOrigin(Record):
 
     @model_validator(mode="after")
     def valid_targets(self) -> "ForecastOrigin":
+        source_clock = self.timezone_name == "source_clock"
+        if (self.latest_observed_at.tzinfo is None) != source_clock or any(
+            (target.tzinfo is None) != source_clock for target in self.targets
+        ):
+            raise ValueError("forecast timestamps must match the task clock mode")
         if len(self.targets) != self.horizon or any(
             target <= self.latest_observed_at for target in self.targets
         ):
@@ -257,7 +274,7 @@ class Forecast(Record):
     deployment_session_id: UUID | None = None
     model_artifact: ArtifactRef
     origin: ForecastOrigin
-    target_timestamps: tuple[AwareDatetime, ...] = Field(min_length=1)
+    target_timestamps: tuple[ClockDatetime, ...] = Field(min_length=1)
     prediction_representation: Literal["point", "quantile"]
     prediction: PointForecast | QuantileForecast
     raw_upload: ArtifactRef
@@ -284,7 +301,7 @@ class Forecast(Record):
 
 
 class ProfilePoint(Record):
-    timestamp: AwareDatetime
+    timestamp: ClockDatetime
     value: float = Field(allow_inf_nan=False)
 
 
@@ -308,7 +325,7 @@ class ReferenceAnalysis(Record):
     analysis_id: UUID = Field(default_factory=uuid4)
     forecast_id: UUID
     target_date: date
-    target_timestamps: tuple[AwareDatetime, ...]
+    target_timestamps: tuple[ClockDatetime, ...]
     d_minus_1: ReferenceDay
     d_minus_7: ReferenceDay
     d_minus_365: ReferenceDay
@@ -323,20 +340,36 @@ class ReferenceAnalysis(Record):
 
 
 class ManualReplacement(Record):
-    timestamp: AwareDatetime
+    timestamp: ClockDatetime
     values: tuple[float, ...] = Field(min_length=1)
 
 
 class AdjustmentProposal(Record):
     adjustment_type: Literal["manual_override", "time_scaling", "load_scaling", "external_scaling"]
-    selected_timestamps: tuple[AwareDatetime, ...] = ()
-    start_at: AwareDatetime | None = None
-    end_at: AwareDatetime | None = None
+    selected_timestamps: tuple[ClockDatetime, ...] = ()
+    start_at: ClockDatetime | None = None
+    end_at: ClockDatetime | None = None
     lambda_value: float | None = None
     threshold: float | None = None
     comparison: Literal["gt", "lt"] | None = None
     external_variable: str | None = None
     manual_replacements: tuple[ManualReplacement, ...] = ()
+
+    @model_validator(mode="after")
+    def one_clock_mode(self) -> "AdjustmentProposal":
+        values = tuple(
+            value
+            for value in (
+                *self.selected_timestamps,
+                self.start_at,
+                self.end_at,
+                *(item.timestamp for item in self.manual_replacements),
+            )
+            if value is not None
+        )
+        if not _one_clock_mode(values):
+            raise ValueError("adjustment timestamps cannot mix source-clock and zoned values")
+        return self
 
 
 class Adjustment(Record):
@@ -345,9 +378,9 @@ class Adjustment(Record):
     forecast_id: UUID
     parent_version_id: UUID
     adjustment_type: Literal["manual_override", "time_scaling", "load_scaling", "external_scaling"]
-    selected_timestamps: tuple[AwareDatetime, ...] = ()
-    start_at: AwareDatetime | None = None
-    end_at: AwareDatetime | None = None
+    selected_timestamps: tuple[ClockDatetime, ...] = ()
+    start_at: ClockDatetime | None = None
+    end_at: ClockDatetime | None = None
     lambda_value: float | None = None
     threshold: float | None = None
     comparison: Literal["gt", "lt"] | None = None
@@ -364,6 +397,18 @@ class Adjustment(Record):
 
     @model_validator(mode="after")
     def valid_request(self) -> "Adjustment":
+        values = tuple(
+            value
+            for value in (
+                *self.selected_timestamps,
+                self.start_at,
+                self.end_at,
+                *(item.timestamp for item in self.manual_replacements),
+            )
+            if value is not None
+        )
+        if not _one_clock_mode(values):
+            raise ValueError("adjustment timestamps cannot mix source-clock and zoned values")
         if self.start_at is not None and self.end_at is not None and self.start_at > self.end_at:
             raise ValueError("adjustment interval start must not follow end")
         if self.selected_timestamps and len(set(self.selected_timestamps)) != len(
@@ -421,7 +466,7 @@ class Adjustment(Record):
 
 
 class VersionValueChange(Record):
-    timestamp: AwareDatetime
+    timestamp: ClockDatetime
     before: tuple[float, ...]
     after: tuple[float, ...]
 
@@ -434,7 +479,7 @@ class ForecastVersion(Record):
     adjustment_id: UUID | None = None
     prediction_representation: Literal["point", "quantile"]
     prediction: PointForecast | QuantileForecast
-    affected_timestamps: tuple[AwareDatetime, ...] = ()
+    affected_timestamps: tuple[ClockDatetime, ...] = ()
     value_changes: tuple[VersionValueChange, ...] = ()
     provenance: dict[str, str] = Field(default_factory=dict)
     created_at: AwareDatetime = Field(default_factory=utc_now)
@@ -442,6 +487,11 @@ class ForecastVersion(Record):
 
     @model_validator(mode="after")
     def original_immutable(self) -> "ForecastVersion":
+        prediction_mode = self.prediction.keys[0].target.tzinfo is None
+        if any(
+            (timestamp.tzinfo is None) != prediction_mode for timestamp in self.affected_timestamps
+        ):
+            raise ValueError("version timestamps must match forecast clock mode")
         if self.prediction_representation != (
             "point" if isinstance(self.prediction, PointForecast) else "quantile"
         ):
@@ -462,6 +512,21 @@ class ForecastVersion(Record):
         return self
 
 
+class AdjustmentImpactPreview(Record):
+    adjustment_id: UUID
+    forecast_id: UUID
+    parent_version_id: UUID
+    affected_timestamps: tuple[ClockDatetime, ...] = Field(min_length=1)
+    value_changes: tuple[VersionValueChange, ...]
+    prediction: PointForecast | QuantileForecast
+
+    @model_validator(mode="after")
+    def aligned(self) -> "AdjustmentImpactPreview":
+        if tuple(change.timestamp for change in self.value_changes) != self.affected_timestamps:
+            raise ValueError("preview changes must match affected timestamps")
+        return self
+
+
 class SensitivityRequest(Record):
     base_version_id: UUID
     variable: str = Field(min_length=1)
@@ -475,7 +540,7 @@ class SensitivityResult(Record):
     variable: str
     perturbation_type: Literal["absolute", "percent"]
     value: float = Field(allow_inf_nan=False)
-    affected_input_timestamps: tuple[AwareDatetime, ...] = Field(min_length=1)
+    affected_input_timestamps: tuple[ClockDatetime, ...] = Field(min_length=1)
     baseline_prediction: PointForecast | QuantileForecast
     perturbed_prediction: PointForecast | QuantileForecast
     deltas: tuple[tuple[float, ...], ...]
@@ -505,7 +570,7 @@ class HistoryDeficit(Record):
     column: str
     required_steps: int = Field(ge=0)
     available_steps: int = Field(ge=0)
-    missing_timestamps: tuple[AwareDatetime, ...] = ()
+    missing_timestamps: tuple[ClockDatetime, ...] = ()
 
 
 class DeploymentValidation(Record):
@@ -517,11 +582,19 @@ class DeploymentValidation(Record):
 
 class FutureAuxiliaryValue(Record):
     column: str = Field(min_length=1)
-    valid_at: AwareDatetime
+    valid_at: ClockDatetime
     value: float = Field(allow_inf_nan=False)
-    available_at: AwareDatetime | None = None
+    available_at: ClockDatetime | None = None
     source_ref: str | None = None
     protocol_id: str | None = None
+
+    @model_validator(mode="after")
+    def matching_clock_mode(self) -> "FutureAuxiliaryValue":
+        if self.available_at is not None and (
+            (self.valid_at.tzinfo is None) != (self.available_at.tzinfo is None)
+        ):
+            raise ValueError("auxiliary issue time must match valid-time clock mode")
+        return self
 
 
 class DeploymentSession(Record):

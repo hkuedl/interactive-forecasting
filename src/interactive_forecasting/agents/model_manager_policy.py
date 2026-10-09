@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-MODEL_MANAGER_SKILL_VERSION = "model-manager-v1"
-MODEL_MANAGER_PROMPT_VERSION = "4c-core-v1+model-manager-v1"
+MODEL_MANAGER_SKILL_VERSION = "model-manager-v2"
+MODEL_MANAGER_PROMPT_VERSION = "optimization-core-v2+model-manager-v2"
 
 MODEL_MANAGER_CORE_PROMPT = (
     "You are Model Manager, a search-strategy specialist supporting Task Manager. "
@@ -26,10 +26,10 @@ def load_model_manager_skill() -> str:
     policy = (
         files("interactive_forecasting.agents")
         .joinpath("skills")
-        .joinpath("model_manager_v1.md")
+        .joinpath("model_manager.md")
         .read_text(encoding="utf-8")
     )
-    if not policy.startswith("# Model Manager search-guidance skill — v1\n"):
+    if not policy.startswith("# Model Manager search-guidance skill — v2\n"):
         raise ValueError("Model Manager skill version does not match the runtime")
     return policy
 

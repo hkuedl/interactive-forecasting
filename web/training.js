@@ -4,6 +4,26 @@ function trainingAction(name) {
     expected_version: opt.session.version
   });
 }
+function guidanceLabel(command) {
+  const families = command.families?.join(", ") || "";
+  if (command.operation === "allocate_family_trials")
+    return `Next batch: ${Object.entries(command.allocation || {}).map(([family, count]) => `${count} ${family}`).join(", ")}`;
+  if (command.operation === "prefer_family") return `Prioritize ${families} in the next batch`;
+  if (command.operation === "exclude_family") return `Exclude ${families} from later search`;
+  if (command.operation === "restrict_families") return `Explore only ${families} in later search`;
+  if (command.operation === "narrow_parameter")
+    return `Narrow ${command.parameter} to ${command.low}–${command.high}`;
+  if (command.operation === "restrict_choices")
+    return `Limit ${command.parameter} to ${(command.choices || []).join(", ")}`;
+  if (command.operation === "fix_parameter")
+    return `Fix ${command.parameter} at ${command.value}`;
+  if (command.operation === "force_feature" || command.operation === "disable_feature")
+    return `${command.operation === "force_feature" ? "Require" : "Disable"} ${command.parameter}`;
+  if (command.operation === "enqueue_candidate")
+    return `Try a ${command.candidate?.family || "specified"} candidate in the next batch`;
+  if (command.operation === "local_refinement") return "Refine around a completed candidate";
+  return command.operation.replaceAll("_", " ");
+}
 function tableView(parent, headers, rows) {
   const table = node("table");
   const header = node("tr");
@@ -62,9 +82,6 @@ function renderTraining() {
       ["Vanilla BO", "vanilla_bo"], ["LLM-guided", "llm_guided"],
       ["Human + LLM-guided", "human_llm_guided"]
     ]);
-    const pause = field(grid, "Pause at each human-guidance boundary", "text", "false", [
-      ["No", "false"], ["Yes", "true"]
-    ]);
     setup.append(grid);
     const label = node("label", "Explicit run protocol JSON", "field");
     const input = node("textarea");
@@ -78,7 +95,7 @@ function renderTraining() {
     addButton("run-setup-content", "Create search run", async () => {
       const payload = JSON.parse(input.value);
       payload.mode = mode.value;
-      payload.pause_at_boundary = pause.value === "true";
+      payload.pause_at_boundary = mode.value === "human_llm_guided";
       await request(`/tasks/${taskId}/optimization/runs`, "POST", payload);
     });
     return;
@@ -101,7 +118,7 @@ function renderTraining() {
     addButton("optimization-controls", state.phase === "executing" ? "Recover / resume round" : "Run next round", () => trainingAction("advance"));
   }
   if (state.phase === "waiting_for_user") {
-    controls.append(node("p", "Paused at a round boundary. Guidance is optional."));
+    controls.append(node("p", "Review results, discuss the next batch, or continue when ready."));
     addButton("optimization-controls", "Continue next round", () => trainingAction("resume"));
   }
   if (!["completed", "failed", "cancelled"].includes(state.phase)) {
@@ -117,6 +134,23 @@ function renderTraining() {
     view.families.map(p => [p.family, p.trials, p.completed, p.failed, p.best_objective])
   );
   guidance.append(node("p", `Effective search space: ${view.effective_space_version} · ${view.effective_space_id}`));
+  if (state.proposed_plan) {
+    const plan = state.proposed_plan;
+    guidance.append(node("h3", "Proposed next-round plan"));
+    guidance.append(node("p", plan.rationale));
+    if (plan.commands.length) {
+      const list = node("ul");
+      for (const command of plan.commands) list.append(node("li", guidanceLabel(command)));
+      guidance.append(list);
+    } else guidance.append(node("p", "No search intervention; continue with the current search space."));
+    if (plan.persistent_approval === "pending") {
+      guidance.append(node("p", "A proposed ongoing search-space restriction needs your decision before the next batch."));
+      addButton("optimization-guidance", "Approve ongoing restriction", () => trainingAction("plan/approve"), "secondary");
+      addButton("optimization-guidance", "Discard ongoing restriction", () => trainingAction("plan/discard"), "secondary");
+    } else if (plan.persistent_approval !== "none") {
+      guidance.append(node("p", `Ongoing restriction: ${plan.persistent_approval}.`));
+    }
+  }
   if (view.guidance.length) tableView(guidance,
     ["Round", "Source", "Action", "Status", "Space after"],
     view.guidance.map(g => [g.round_number, g.source, g.commands.map(c => c.operation).join(", "), g.status, g.space_after?.slice(0, 8) || "—"])
@@ -157,6 +191,7 @@ function renderTraining() {
     });
     if (state.guidance_draft) {
       guidance.append(node("p", "Draft is unconfirmed. Confirm it before continuing."));
+      if (state.proposed_plan) guidance.append(node("p", "Confirming this workspace draft replaces the proposed next-round plan."));
       addButton("optimization-guidance", "Confirm structured guidance", () => trainingAction("guidance/confirm"), "secondary");
       addButton("optimization-guidance", "Clear draft", () => trainingAction("guidance/clear"), "secondary");
     }

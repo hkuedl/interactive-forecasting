@@ -93,6 +93,12 @@ class ModelManagerContext(Contract):
     optimization_summary: OptimizationSummary | None = None
     user_guidance: tuple[GuidanceCommand, ...] = ()
     user_guidance_text: str | None = None
+    previous_execution_report: str | None = None
+    proposed_guidance: tuple[GuidanceCommand, ...] = ()
+    proposed_rationale: str | None = None
+    pending_restriction_approval: bool = False
+    proposed_restriction_status: Literal["none", "pending", "approved", "discarded"] | None = None
+    recent_dialogue: tuple[dict[str, str], ...] = ()
 
 
 class ExecutionRequest(Contract):
@@ -116,6 +122,10 @@ class ApprovedExecution(ExecutionRequest):
 class ModelDeveloperContext(Contract):
     task: Task
     approved_request: ApprovedExecution
+    approved_plan_text: str | None = None
+    approved_guidance: tuple[GuidanceCommand, ...] = ()
+    execution_result: ToolResult | None = None
+    round_trials: tuple[ValidationTrialSummary, ...] = ()
 
 
 class DeploymentForecastPoint(Contract):

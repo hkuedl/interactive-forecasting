@@ -100,6 +100,7 @@ def _aggregate(records: list[dict]) -> list[dict]:
 
 def report(document: dict) -> str:
     """Render per-series and aggregate results as a readable HTML report."""
+
     def esc(value: object) -> str:
         return html.escape(str(value), quote=True)
 

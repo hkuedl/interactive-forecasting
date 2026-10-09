@@ -4,37 +4,52 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID, uuid4
+
+from pydantic import BaseModel
 
 from interactive_forecasting.agents.contracts import (
     AgentAction,
     AgentContext,
+    AgentDecision,
     ExecuteApproved,
     ExecutionRequest,
     ModelDeveloperContext,
     ModelManagerContext,
     ProposeGuidance,
     ProposeGuidanceBatch,
-    ProposeHumanGuidance,
-    TaskManagerContext,
     ToolResult,
     UnauthorizedAction,
     ValidationTrialSummary,
+    authorize_decision,
 )
 from interactive_forecasting.agents.model_manager_policy import MODEL_MANAGER_PROMPT_VERSION
-from interactive_forecasting.agents.runtime import AgentRequest, AgentRuntime
+from interactive_forecasting.agents.optimization_manager import (
+    ModelDeveloperReport,
+    OptimizationReply,
+    OptimizationRoute,
+)
+from interactive_forecasting.agents.runtime import (
+    AgentRequest,
+    AgentRuntime,
+    AgentRuntimeError,
+    RuntimeMetadata,
+)
 from interactive_forecasting.domain.forecasting import OriginSchedule, ResolvedCandidate
-from interactive_forecasting.domain.models import Event, ExperimentRun, Message, Task
+from interactive_forecasting.domain.models import Event, ExperimentRun, LLMCall, Message, Task
 from interactive_forecasting.domain.optimization import (
     GuidanceDraft,
     GuidanceEffect,
     OptimizationPhase,
     OptimizationSession,
+    ProposedRoundPlan,
 )
 from interactive_forecasting.domain.search import (
     BackendConfig,
     GuidanceCommand,
     ValidationMetricConfig,
+    is_persistent_guidance,
 )
 from interactive_forecasting.domain.types import (
     Actor,
@@ -87,47 +102,14 @@ class RunSetup:
     pause_at_boundary: bool = False
 
 
-def parse_guidance_text(text: str) -> tuple[GuidanceCommand, ...] | None:
-    """Deterministic bounded chat grammar; ambiguous language needs Task Manager runtime."""
-    normalized = text.strip().rstrip(".")
-    name = r"(Linear|SVR|MLP|XGBoost|LSTM|GRU|CNN)"
-    match = re.fullmatch(rf"(?:prefer|prioritize) {name}", normalized, re.IGNORECASE)
-    if match:
-        family = next(item for item in ModelFamily if item.value.lower() == match.group(1).lower())
-        return (GuidanceCommand(operation="prefer_family", families=(family,)),)
-    match = re.fullmatch(rf"exclude {name}", normalized, re.IGNORECASE)
-    if match:
-        family = next(item for item in ModelFamily if item.value.lower() == match.group(1).lower())
-        return (GuidanceCommand(operation="exclude_family", families=(family,)),)
-    match = re.fullmatch(rf"allocate {name} (\d+)", normalized, re.IGNORECASE)
-    if match:
-        family = next(item for item in ModelFamily if item.value.lower() == match.group(1).lower())
-        return (
-            GuidanceCommand(
-                operation="allocate_family_trials", allocation={family: int(match.group(2))}
-            ),
-        )
-    match = re.fullmatch(
-        r"narrow ([\w.]+) to (-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)",
-        normalized,
-        re.IGNORECASE,
-    )
-    if match:
-        return (
-            GuidanceCommand(
-                operation="narrow_parameter",
-                parameter=match.group(1),
-                low=float(match.group(2)),
-                high=float(match.group(3)),
-            ),
-        )
-    return None
-
-
 class _GuidanceExecutor:
-    def __init__(self, workflow: OptimizationWorkflow, task_id: UUID):
+    def __init__(
+        self, workflow: OptimizationWorkflow, task_id: UUID, session_version: int, run_version: int
+    ):
         self.workflow = workflow
         self.task_id = task_id
+        self.session_version = session_version
+        self.run_version = run_version
 
     async def execute(self, action: AgentAction, context: AgentContext) -> ToolResult:
         if not isinstance(context, ModelManagerContext):
@@ -140,6 +122,19 @@ class _GuidanceExecutor:
         else:
             raise UnauthorizedAction("Model Manager may only propose typed guidance here")
         session = self.workflow._session(self.task_id)
+        if (
+            session.version != self.session_version
+            or self.workflow._run(session).version != self.run_version
+        ):
+            raise VersionConflict("optimization changed during the Model Manager turn")
+        if session.mode == OptimizationMode.HUMAN_LLM_GUIDED:
+            updated = self.workflow._stage_manager_plan(
+                session, commands, rationale="Model Manager structured guidance"
+            )
+            return ToolResult(
+                status="completed",
+                data={"session_version": updated.version, "guidance_count": len(commands)},
+            )
         user_effect = self.workflow._current_human_effect(session)
         source = "combined" if user_effect is not None else "model_manager"
         updated = self.workflow._apply_guidance(
@@ -153,25 +148,6 @@ class _GuidanceExecutor:
             status="completed",
             data={"session_version": updated.version, "guidance_count": len(commands)},
         )
-
-
-class _HumanDraftExecutor:
-    def __init__(self, workflow: OptimizationWorkflow, task_id: UUID):
-        self.workflow = workflow
-        self.task_id = task_id
-
-    async def execute(self, action: AgentAction, context: AgentContext) -> ToolResult:
-        if not isinstance(action, ProposeHumanGuidance) or not isinstance(
-            context, TaskManagerContext
-        ):
-            raise UnauthorizedAction("Task Manager may only propose typed human guidance here")
-        updated = self.workflow.save_draft(
-            self.task_id,
-            action.expected_session_version,
-            action.commands,
-            original_text=context.user_text,
-        )
-        return ToolResult(status="completed", data={"session_version": updated.version})
 
 
 @dataclass
@@ -266,14 +242,100 @@ class OptimizationWorkflow:
         MessageBus(self.messages, self.tasks).publish(
             Message(
                 task_id=task_id,
-                source_role=Actor.TASK_MANAGER,
-                target_role=Actor.USER,
-                topic=Topic.CHAT,
+                source_role=Actor.SYSTEM,
+                target_role=Actor.TASK_MANAGER,
+                topic=Topic.OPTIMIZE,
                 kind=MessageKind.EVENT,
                 message_type="optimization.status",
                 payload={"text": text},
             )
         )
+
+    async def _typed_turn(
+        self,
+        user: Message,
+        role: Actor,
+        schema: type[BaseModel],
+        prompt: str,
+        context: dict[str, object] | ModelManagerContext | ModelDeveloperContext,
+        version: str,
+    ) -> BaseModel:
+        if self.runtime is None:
+            raise ValueError("agent runtime is not configured")
+        request_message = Message(
+            task_id=user.task_id,
+            run_id=self._session(user.task_id).run_id,
+            source_role=Actor.TASK_MANAGER if role == Actor.MODEL_MANAGER else Actor.SYSTEM,
+            target_role=role,
+            topic=Topic.TRAIN if role == Actor.MODEL_DEVELOPER else Topic.OPTIMIZE,
+            kind=MessageKind.COMMAND,
+            message_type="optimization.agent_request",
+            payload={"prompt": prompt[:1000]},
+            correlation_id=user.correlation_id,
+            parent_message_id=user.message_id,
+        )
+        self.messages.append(request_message)
+        request = AgentRequest(
+            role=role,
+            task_id=user.task_id,
+            correlation_id=user.correlation_id,
+            prompt=prompt,
+            context=context,
+            prompt_version=version,
+            timeout_seconds=60,
+        )
+        try:
+            response = await self.runtime.run(request, schema)
+            output = schema.model_validate(response.output.model_dump(mode="json"))
+        except Exception as exc:
+            metadata = (
+                exc.metadata
+                if isinstance(exc, AgentRuntimeError)
+                else RuntimeMetadata(
+                    runtime_name=type(self.runtime).__name__,
+                    runtime_version=None,
+                    provider="unknown",
+                    model=None,
+                    status="invalid_output",
+                )
+            )
+            self.calls.create(
+                LLMCall(
+                    task_id=user.task_id,
+                    message_id=request_message.message_id,
+                    correlation_id=user.correlation_id,
+                    agent_role=role,
+                    prompt_version=version,
+                    error=type(exc).__name__,
+                    **vars(metadata),
+                )
+            )
+            raise
+        self.calls.create(
+            LLMCall(
+                task_id=user.task_id,
+                message_id=request_message.message_id,
+                correlation_id=user.correlation_id,
+                agent_role=role,
+                prompt_version=version,
+                **vars(response.metadata),
+            )
+        )
+        self.messages.append(
+            Message(
+                task_id=user.task_id,
+                run_id=self._session(user.task_id).run_id,
+                source_role=role,
+                target_role=Actor.SYSTEM,
+                topic=Topic.TRAIN if role == Actor.MODEL_DEVELOPER else Topic.OPTIMIZE,
+                kind=MessageKind.RESULT,
+                message_type="optimization.agent_result",
+                payload=output.model_dump(mode="json"),
+                correlation_id=user.correlation_id,
+                parent_message_id=request_message.message_id,
+            )
+        )
+        return output
 
     def _engine(self, run: ExperimentRun) -> SearchEngine:
         if (
@@ -374,7 +436,9 @@ class OptimizationWorkflow:
                     if initial_target
                     else OptimizationPhase.BOUNDARY
                 ),
-                pause_at_boundary=setup.pause_at_boundary,
+                pause_at_boundary=(
+                    setup.mode == OptimizationMode.HUMAN_LLM_GUIDED or setup.pause_at_boundary
+                ),
             )
         )
         self._transition_to(task_id, OptimizationState.INITIAL_RANDOM_TRIALS)
@@ -427,6 +491,75 @@ class OptimizationWorkflow:
                 and effect.status == "applied"
             ),
             None,
+        )
+
+    def _stage_manager_plan(
+        self,
+        session: OptimizationSession,
+        commands: tuple[GuidanceCommand, ...],
+        *,
+        rationale: str,
+        user_text: str | None = None,
+    ) -> OptimizationSession:
+        if session.mode != OptimizationMode.HUMAN_LLM_GUIDED or session.phase not in {
+            OptimizationPhase.BOUNDARY,
+            OptimizationPhase.WAITING_FOR_USER,
+        }:
+            raise ValueError("a proposed round plan requires a human discussion boundary")
+        run = self._run(session)
+        plan = ProposedRoundPlan(
+            round_number=run.completed_rounds,
+            run_version=run.version,
+            commands=commands,
+            rationale=rationale[:2000],
+            user_text=user_text,
+            persistent_approval=(
+                "pending" if any(is_persistent_guidance(item) for item in commands) else "none"
+            ),
+        )
+        return self._save(session, proposed_plan=plan)
+
+    def approve_plan_restrictions(
+        self, task_id: UUID, expected_version: int
+    ) -> OptimizationSession:
+        session = self._session(task_id)
+        if session.version != expected_version:
+            raise VersionConflict("stale optimization plan")
+        plan = session.proposed_plan
+        if plan is None or plan.persistent_approval != "pending":
+            raise ValueError("no persistent restriction is awaiting approval")
+        return self._save(
+            session,
+            proposed_plan=plan.model_copy(update={"persistent_approval": "approved"}),
+        )
+
+    def discard_plan_restrictions(
+        self, task_id: UUID, expected_version: int
+    ) -> OptimizationSession:
+        session = self._session(task_id)
+        if session.version != expected_version:
+            raise VersionConflict("stale optimization plan")
+        plan = session.proposed_plan
+        if plan is None or plan.persistent_approval != "pending":
+            raise ValueError("no persistent restriction is awaiting approval")
+        run = self._run(session)
+        if run.effective_space is None:
+            raise ValueError("search space is unavailable")
+        discarded = GuidanceEffect(
+            draft_id=plan.plan_id,
+            source="human",
+            round_number=run.completed_rounds,
+            commands=tuple(item for item in plan.commands if is_persistent_guidance(item)),
+            original_text=plan.user_text,
+            rationale="User discarded the proposed ongoing restriction.",
+            space_before=run.effective_space.space_id,
+            space_after=run.effective_space.space_id,
+            status="discarded",
+        )
+        return self._save(
+            session,
+            proposed_plan=plan.model_copy(update={"persistent_approval": "discarded"}),
+            guidance_effects=(*session.guidance_effects, discarded),
         )
 
     def _apply_guidance(
@@ -543,6 +676,8 @@ class OptimizationWorkflow:
             draft_id=draft.draft_id,
         )
         updated = self._save(updated, guidance_draft=None)
+        if updated.proposed_plan is not None:
+            updated = self._save(updated, proposed_plan=None)
         self._notify(task_id, "Your structured guidance was validated and applied.")
         return updated
 
@@ -558,12 +693,89 @@ class OptimizationWorkflow:
             executor,
         )
 
+    def _discussion_context(self, user: Message, session: OptimizationSession) -> dict[str, object]:
+        run = self._run(session)
+        progress = summarize_optimization(run)
+        return {
+            "phase": session.phase.value,
+            "session_version": session.version,
+            "progress": {
+                "completed_trials": progress.completed_trials,
+                "remaining_budget": progress.remaining_budget,
+                "stopping_status": progress.stopping_status,
+            },
+            "proposed_plan": session.proposed_plan.model_dump(mode="json")
+            if session.proposed_plan
+            else None,
+            "guidance_draft": session.guidance_draft.model_dump(mode="json")
+            if session.guidance_draft
+            else None,
+            "recent_dialogue": [
+                {"role": message.source_role.value, "text": str(message.payload["text"])[:500]}
+                for message in self.messages.list_for_task(user.task_id)
+                if message.message_id != user.message_id
+                and message.topic == Topic.CHAT
+                and message.message_type in {"optimization.guidance_input", "optimization.reply"}
+                and isinstance(message.payload.get("text"), str)
+            ][-10:],
+        }
+
+    def _manager_context(
+        self,
+        session: OptimizationSession,
+        user_text: str | None = None,
+        user: Message | None = None,
+    ) -> ModelManagerContext:
+        run = self._run(session)
+        if run.task_definition is None or run.effective_space is None:
+            raise ValueError("search run is incomplete")
+        human = self._current_human_effect(session)
+        return ModelManagerContext(
+            task=self._task(session.task_id),
+            task_definition=run.task_definition,
+            run_id=run.run_id,
+            effective_search_space=run.effective_space,
+            validation_history=tuple(
+                ValidationTrialSummary(
+                    trial_id=trial.trial_id,
+                    family=trial.request.family.value,
+                    status=trial.status,
+                    validation_objective=trial.objective,
+                )
+                for trial in run.trials[-12:]
+            ),
+            guidance_history=run.guidance_history[-12:],
+            optimization_summary=summarize_optimization(run),
+            user_guidance=human.commands if human else (),
+            user_guidance_text=user_text or (human.original_text if human else None),
+            previous_execution_report=session.latest_execution_report,
+            proposed_guidance=session.proposed_plan.commands if session.proposed_plan else (),
+            proposed_rationale=session.proposed_plan.rationale if session.proposed_plan else None,
+            pending_restriction_approval=bool(
+                session.proposed_plan and session.proposed_plan.persistent_approval == "pending"
+            ),
+            proposed_restriction_status=session.proposed_plan.persistent_approval
+            if session.proposed_plan
+            else None,
+            recent_dialogue=tuple(
+                cast(
+                    list[dict[str, str]],
+                    self._discussion_context(user, session)["recent_dialogue"],
+                )
+            )
+            if user is not None
+            else (),
+        )
+
     async def chat(self, task_id: UUID, expected_version: int, text: str) -> OptimizationSession:
         session = self._session(task_id)
         if session.version != expected_version:
-            raise VersionConflict("stale optimization guidance draft")
-        if session.mode != OptimizationMode.HUMAN_LLM_GUIDED:
-            raise ValueError("search guidance chat is unavailable outside human_llm_guided")
+            raise VersionConflict("stale optimization session")
+        expected_run_version = self._run(session).version
+        if session.mode != OptimizationMode.HUMAN_LLM_GUIDED or self.runtime is None:
+            raise ValueError("live discussion requires a configured human-guided session")
+        if not text.strip():
+            raise ValueError("message cannot be empty")
         user = Message(
             task_id=task_id,
             source_role=Actor.USER,
@@ -573,42 +785,213 @@ class OptimizationWorkflow:
             message_type="optimization.guidance_input",
             payload={"text": text[:1000]},
         )
-        bus = MessageBus(self.messages, self.tasks)
-        bus.publish(user)
-        parsed = parse_guidance_text(text)
-        if parsed is not None:
-            updated = self.save_draft(task_id, expected_version, parsed, original_text=text[:1000])
-        elif self.runtime is not None:
-            task = self._task(task_id)
-            turn = await self._coordinator(_HumanDraftExecutor(self, task_id)).invoke(
-                AgentRequest(
-                    role=Actor.TASK_MANAGER,
-                    task_id=task_id,
-                    correlation_id=user.correlation_id,
-                    prompt=(
-                        "Interpret user search guidance as a typed, unconfirmed draft. "
-                        "Ask for clarification if ambiguous."
-                    ),
-                    context=TaskManagerContext(
-                        task=task,
-                        user_text=text[:1000],
-                        optimization_session_version=session.version,
-                    ),
-                    expected_task_version=task.version,
-                    prompt_version="4c-task-manager-guidance-v1",
-                ),
+        MessageBus(self.messages, self.tasks).publish(user)
+        context = self._discussion_context(user, session)
+        route: OptimizationRoute | None = None
+        for attempt in range(2):
+            prompt = (
+                text[:1000]
+                if not attempt
+                else (
+                    "Recheck the current user message only. Earlier dialogue helps resolve "
+                    "references but does not override a new explicit start request. "
+                    "Do not treat continuation as restriction approval without a formally "
+                    f"pending restriction. User message: {text[:700]}"
+                )
+            )
+            try:
+                candidate = await self._typed_turn(
+                    user,
+                    Actor.TASK_MANAGER,
+                    OptimizationRoute,
+                    prompt,
+                    context,
+                    "optimization-task-manager-route-v2",
+                )
+                assert isinstance(candidate, OptimizationRoute)
+                if candidate.authorization_quote and candidate.authorization_quote not in text:
+                    raise ValueError(
+                        "Task Manager cited an authorization absent from the user message"
+                    )
+                if candidate.restriction_decision != "none" and (
+                    session.proposed_plan is None
+                    or session.proposed_plan.persistent_approval != "pending"
+                ):
+                    raise ValueError("no formally pending restriction to approve or discard")
+                if candidate.intent == "guidance" and not candidate.consult_manager:
+                    raise ValueError("optimization guidance must be interpreted by Model Manager")
+                route = candidate
+                break
+            except VersionConflict:
+                raise
+            except (AgentRuntimeError, ValueError):
+                if attempt:
+                    raise
+            if (
+                self._session(task_id).version != expected_version
+                or self._run(session).version != expected_run_version
+            ):
+                raise VersionConflict("optimization session changed during discussion")
+        assert route is not None
+        if (
+            self._session(task_id).version != expected_version
+            or self._run(session).version != expected_run_version
+        ):
+            raise VersionConflict("optimization session changed during discussion")
+        if route.restriction_decision != "none" and (route.authorization_quote or "").strip(
+            " .!?\n\t"
+        ).casefold() in {"continue", "start", "run", "proceed", "go ahead"}:
+            raise ValueError("continuation alone cannot approve a persistent restriction")
+        result: dict[str, object] = {"outcome": "read_only"}
+        try:
+            manager_explanation: str | None = None
+            # An optimization question is specialist work even if TM omits the flag.
+            if route.consult_manager or route.intent == "question":
+                mm_context = self._manager_context(session, route.instruction, user)
+                decision = await self._typed_turn(
+                    user,
+                    Actor.MODEL_MANAGER,
+                    AgentDecision,
+                    route.instruction,
+                    mm_context,
+                    MODEL_MANAGER_PROMPT_VERSION,
+                )
+                assert isinstance(decision, AgentDecision)
+                authorize_decision(Actor.MODEL_MANAGER, mm_context, decision)
+                if decision.action is not None and not isinstance(
+                    decision.action, (ProposeGuidance, ProposeGuidanceBatch)
+                ):
+                    raise UnauthorizedAction(
+                        "Model Manager may only propose guidance in discussion"
+                    )
+                if (
+                    self._session(task_id).version != expected_version
+                    or self._run(session).version != expected_run_version
+                ):
+                    raise VersionConflict("optimization session changed during specialist turn")
+                manager_explanation = decision.explanation
+                if route.intent == "guidance":
+                    commands: tuple[GuidanceCommand, ...]
+                    if isinstance(decision.action, ProposeGuidance):
+                        commands = (decision.action.command,)
+                    elif isinstance(decision.action, ProposeGuidanceBatch):
+                        commands = decision.action.commands
+                    elif decision.action is None:
+                        commands = ()
+                    else:
+                        raise UnauthorizedAction("Model Manager cannot execute a discussion plan")
+                    if commands:
+                        pending = session.proposed_plan
+                        if (
+                            route.restriction_decision != "none"
+                            and pending is not None
+                            and pending.persistent_approval == "pending"
+                            and tuple(
+                                item for item in pending.commands if is_persistent_guidance(item)
+                            )
+                            != tuple(item for item in commands if is_persistent_guidance(item))
+                        ):
+                            raise ValueError(
+                                "a changed ongoing restriction needs its own review before approval"
+                            )
+                        session = self._stage_manager_plan(
+                            session,
+                            commands,
+                            rationale=manager_explanation,
+                            user_text=text[:1000],
+                        )
+                        result["outcome"] = "completed"
+                        result["plan_proposed"] = True
+            if route.restriction_decision != "none":
+                if route.restriction_decision == "approve":
+                    session = self.approve_plan_restrictions(task_id, session.version)
+                else:
+                    session = self.discard_plan_restrictions(task_id, session.version)
+                result["outcome"] = "completed"
+                result["restriction_decision"] = route.restriction_decision
+            if route.start:
+                if session.phase != OptimizationPhase.WAITING_FOR_USER:
+                    raise ValueError("the next batch can start only at a user discussion boundary")
+                if session.proposed_plan and session.proposed_plan.persistent_approval == "pending":
+                    result["approval_required"] = True
+                else:
+                    session = await self._start_human_round(session)
+                    if (
+                        session.proposed_plan is not None
+                        and session.proposed_plan.persistent_approval == "pending"
+                    ):
+                        result["approval_required"] = True
+                    else:
+                        result["outcome"] = "completed"
+                        result["batch_executed"] = True
+            if manager_explanation is not None:
+                result["manager_explanation"] = manager_explanation[:1200]
+        except VersionConflict:
+            raise
+        except Exception as exc:
+            session = self._session(task_id)
+            result = {"outcome": "failed", "error": str(exc)}
+        result["session_version"] = session.version
+        result["phase"] = session.phase.value
+        result["proposed_plan"] = (
+            session.proposed_plan.model_dump(mode="json") if session.proposed_plan else None
+        )
+        final: OptimizationReply | None = None
+        for attempt in range(2):
+            prompt = (
+                "Final reply only; do not take another action. "
+                f"The authoritative application outcome is {result['outcome']}. "
+                "Use execution_result for what happened. "
+                f"User message: {text[:700]}"
+            )
+            if attempt:
+                prompt = "Your previous final reply did not match the application result. " + prompt
+            try:
+                reply = await self._typed_turn(
+                    user,
+                    Actor.TASK_MANAGER,
+                    OptimizationReply,
+                    prompt,
+                    {**self._discussion_context(user, session), "execution_result": result},
+                    "optimization-task-manager-reply-v2",
+                )
+                assert isinstance(reply, OptimizationReply)
+                if reply.outcome == result["outcome"]:
+                    final = reply
+                    break
+            except VersionConflict:
+                raise
+            except Exception:
+                # A failed narration must not retry an already committed search batch.
+                pass
+            if self._session(task_id).version != session.version:
+                raise VersionConflict("optimization session changed during final reply")
+        if self._session(task_id).version != session.version:
+            raise VersionConflict("optimization session changed before final reply")
+        if final is None:
+            warning = (
+                "Task Manager reply unavailable. The current optimization results "
+                "are saved; review them before continuing."
+            )
+            underlying_error = session.last_error or result.get("error")
+            return self._save(
+                session,
+                last_error=f"{underlying_error} {warning}" if underlying_error else warning,
+            )
+        self.messages.append(
+            Message(
+                task_id=task_id,
+                source_role=Actor.TASK_MANAGER,
+                target_role=Actor.USER,
+                topic=Topic.CHAT,
+                kind=MessageKind.EVENT,
+                message_type="optimization.reply",
+                payload={"text": final.text},
+                correlation_id=user.correlation_id,
                 parent_message_id=user.message_id,
             )
-            if turn.action_status != "completed":
-                raise ValueError("Task Manager did not produce a typed guidance draft")
-            updated = self._session(task_id)
-        else:
-            self._notify(
-                task_id, "Please use a supported guidance command or the structured controls."
-            )
-            return session
-        self._notify(task_id, "Guidance draft saved. Review and confirm it before the next round.")
-        return updated
+        )
+        return session
 
     async def _plan(self, session: OptimizationSession) -> OptimizationSession:
         if session.mode == OptimizationMode.VANILLA_BO:
@@ -618,7 +1001,8 @@ class OptimizationWorkflow:
         run = self._run(session)
         if run.effective_space is None or run.task_definition is None:
             raise ValueError("search run is incomplete")
-        self._transition_to(session.task_id, OptimizationState.MODEL_MANAGER_PLAN)
+        if session.mode != OptimizationMode.HUMAN_LLM_GUIDED:
+            self._transition_to(session.task_id, OptimizationState.MODEL_MANAGER_PLAN)
         task = self._task(session.task_id)
         correlation = uuid4()
         bus = MessageBus(self.messages, self.tasks)
@@ -653,9 +1037,12 @@ class OptimizationWorkflow:
             optimization_summary=summarize_optimization(run),
             user_guidance=human.commands if human else (),
             user_guidance_text=human.original_text if human else None,
+            previous_execution_report=session.latest_execution_report,
         )
         try:
-            turn = await self._coordinator(_GuidanceExecutor(self, session.task_id)).invoke(
+            turn = await self._coordinator(
+                _GuidanceExecutor(self, session.task_id, session.version, run.version)
+            ).invoke(
                 AgentRequest(
                     role=Actor.MODEL_MANAGER,
                     task_id=session.task_id,
@@ -674,11 +1061,61 @@ class OptimizationWorkflow:
                 raise ValueError("Model Manager guidance was rejected")
         except Exception as exc:
             current = self._session(session.task_id)
-            self._save(current, phase=OptimizationPhase.BOUNDARY, last_error=str(exc))
+            self._save(
+                current,
+                phase=current.phase
+                if current.mode == OptimizationMode.HUMAN_LLM_GUIDED
+                else OptimizationPhase.BOUNDARY,
+                last_error=str(exc),
+            )
             raise
         if turn.decision.action is not None:
-            self._notify(session.task_id, f"Model Manager: {turn.decision.explanation[:400]}")
+            current = self._session(session.task_id)
+            if current.mode == OptimizationMode.HUMAN_LLM_GUIDED and current.proposed_plan:
+                current = self._save(
+                    current,
+                    proposed_plan=current.proposed_plan.model_copy(
+                        update={"rationale": turn.decision.explanation[:2000]}
+                    ),
+                )
+            else:
+                self._notify(session.task_id, f"Model Manager: {turn.decision.explanation[:400]}")
         return self._session(session.task_id)
+
+    async def _start_human_round(self, session: OptimizationSession) -> OptimizationSession:
+        if session.mode != OptimizationMode.HUMAN_LLM_GUIDED:
+            raise ValueError("not a human-guided session")
+        if session.guidance_draft is not None:
+            raise ValueError("confirm or clear the guidance draft before continuing")
+        if session.proposed_plan is None:
+            session = await self._plan(session)
+        plan = session.proposed_plan
+        if plan is not None:
+            run = self._run(session)
+            if plan.round_number != run.completed_rounds or plan.run_version != run.version:
+                raise VersionConflict("proposed plan is stale; request a new strategy")
+            if plan.persistent_approval == "pending":
+                return session
+            commands = tuple(
+                item
+                for item in plan.commands
+                if plan.persistent_approval != "discarded" or not is_persistent_guidance(item)
+            )
+            if commands:
+                human = self._current_human_effect(session)
+                source = "combined" if plan.user_text or human else "model_manager"
+                session = self._apply_guidance(
+                    session,
+                    commands,
+                    source=source,
+                    original_text=plan.user_text or (human.original_text if human else None),
+                    rationale=plan.rationale,
+                    draft_id=plan.plan_id,
+                )
+            session = self._save(session, proposed_plan=None, executing_plan=plan)
+        self._status(session.task_id, WorkflowStatus.ACTIVE)
+        self._transition_to(session.task_id, OptimizationState.VALIDATE_GUIDANCE)
+        return await self._execute(session)
 
     async def _execute(self, session: OptimizationSession) -> OptimizationSession:
         run = self._run(session)
@@ -701,7 +1138,12 @@ class OptimizationWorkflow:
             ),
             context,
         )
-        session = self._save(session, phase=OptimizationPhase.EXECUTING, last_error=None)
+        session = self._save(
+            session,
+            phase=OptimizationPhase.EXECUTING,
+            last_error=None,
+            latest_execution_report=None,
+        )
         bus = MessageBus(self.messages, self.tasks)
         correlation = uuid4()
         approval_message = Message(
@@ -716,7 +1158,34 @@ class OptimizationWorkflow:
             correlation_id=correlation,
         )
         bus.publish(approval_message)
-        developer_context = ModelDeveloperContext(task=task, approved_request=approved)
+        plan = session.executing_plan
+        applied_plan_commands = (
+            next(
+                (
+                    effect.commands
+                    for effect in reversed(session.guidance_effects)
+                    if plan is not None
+                    and effect.draft_id == plan.plan_id
+                    and effect.status == "applied"
+                ),
+                (),
+            )
+            if plan is not None
+            else ()
+        )
+        developer_context = ModelDeveloperContext(
+            task=task,
+            approved_request=approved,
+            approved_plan_text=(
+                plan.rationale
+                + " Persistent restrictions were discarded; execute only approved guidance."
+                if plan is not None and plan.persistent_approval == "discarded"
+                else plan.rationale
+                if plan is not None
+                else None
+            ),
+            approved_guidance=applied_plan_commands,
+        )
         executor = SearchActionExecutor(self._engine(run), self.runs)
         try:
             if self.runtime is not None and session.mode != OptimizationMode.VANILLA_BO:
@@ -756,6 +1225,49 @@ class OptimizationWorkflow:
             current = self._session(session.task_id)
             self._save(current, last_error=f"{type(exc).__name__}: {exc}")
             raise
+        if self.runtime is not None and session.mode != OptimizationMode.VANILLA_BO:
+            completed_run = self._run(session)
+            recent_trials = tuple(
+                ValidationTrialSummary(
+                    trial_id=trial.trial_id,
+                    family=trial.request.family.value,
+                    status=trial.status,
+                    validation_objective=trial.objective,
+                )
+                for trial in completed_run.trials
+                if trial.round_number == run.completed_rounds
+            )
+            report_context = developer_context.model_copy(
+                update={
+                    "execution_result": ToolResult(
+                        status="completed",
+                        data={
+                            "round": run.completed_rounds,
+                            "completed_trials": sum(
+                                item.status == "completed" for item in recent_trials
+                            ),
+                            "failed_trials": sum(item.status == "failed" for item in recent_trials),
+                        },
+                    ),
+                    "round_trials": recent_trials[:12],
+                }
+            )
+            try:
+                report = await self._typed_turn(
+                    approval_message,
+                    Actor.MODEL_DEVELOPER,
+                    ModelDeveloperReport,
+                    "Report the completed approved batch using only recorded results.",
+                    report_context,
+                    "optimization-model-developer-report-v1",
+                )
+                assert isinstance(report, ModelDeveloperReport)
+                session = self._save(
+                    self._session(session.task_id), latest_execution_report=report.text
+                )
+            except Exception:
+                # The numerical batch is already committed; reporting must not rerun it.
+                pass
         return self._reconcile(self._session(session.task_id))
 
     def _reconcile(self, session: OptimizationSession) -> OptimizationSession:
@@ -827,6 +1339,7 @@ class OptimizationWorkflow:
             guidance_effects=effects,
             last_reconciled_round=run.completed_rounds,
             last_error=None,
+            executing_plan=None,
         )
         updated = (
             self._save(session, **changes)
@@ -893,7 +1406,7 @@ class OptimizationWorkflow:
             raise ValueError("optimization session is terminal")
         if session.guidance_draft is not None:
             raise ValueError("confirm or clear the guidance draft before continuing")
-        if session.mode == OptimizationMode.HUMAN_LLM_GUIDED and session.pause_at_boundary:
+        if session.mode == OptimizationMode.HUMAN_LLM_GUIDED:
             session = self._save(session, phase=OptimizationPhase.WAITING_FOR_USER)
             self._transition_to(task_id, OptimizationState.WAIT_FOR_OPTIONAL_USER_GUIDANCE)
             self._status(task_id, WorkflowStatus.WAITING_FOR_USER)
@@ -916,6 +1429,8 @@ class OptimizationWorkflow:
         session = self._recover_pending_guidance(session)
         if session.guidance_draft is not None:
             raise ValueError("confirm or clear guidance before resuming")
+        if session.mode == OptimizationMode.HUMAN_LLM_GUIDED:
+            return await self._start_human_round(session)
         self._status(task_id, WorkflowStatus.ACTIVE)
         session = self._save(session, phase=OptimizationPhase.BOUNDARY)
         return await self._plan_then_execute(session)

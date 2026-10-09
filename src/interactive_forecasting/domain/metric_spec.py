@@ -57,10 +57,11 @@ class MetricSpec(MetricRecord):
                 raise ValueError("weighted MAE needs a time range and task timezone")
             if self.over_weight is not None or self.under_weight is not None:
                 raise ValueError("weighted MAE cannot have asymmetric penalties")
-            try:
-                ZoneInfo(self.timezone_name)
-            except ZoneInfoNotFoundError as exc:
-                raise ValueError("weighted metric timezone is not recognized") from exc
+            if self.timezone_name != "source_clock":
+                try:
+                    ZoneInfo(self.timezone_name)
+                except ZoneInfoNotFoundError as exc:
+                    raise ValueError("weighted metric timezone is not recognized") from exc
         else:
             if self.base_metric != "mae":
                 raise ValueError("only asymmetric MAE is supported")

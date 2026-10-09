@@ -23,7 +23,7 @@ from interactive_forecasting.domain.preparation import (
     PreparedSnapshot,
     SchemaInspection,
 )
-from interactive_forecasting.services.data.core import NormalizedSeries
+from interactive_forecasting.services.data.core import SOURCE_CLOCK, NormalizedSeries
 from interactive_forecasting.storage.artifacts import ArtifactStore
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -386,7 +386,8 @@ def _prepare_frame(
     minimum_rows: int = 3,
     frequency_override: str | None = None,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
-    ZoneInfo(plan.timezone_name)
+    if plan.timezone_name != SOURCE_CLOCK:
+        ZoneInfo(plan.timezone_name)
     names = [mapping.timestamp_column, mapping.target_column, *mapping.auxiliary_roles]
     availability = [
         f"{name}__available_at"
@@ -405,7 +406,10 @@ def _prepare_frame(
     # Read every mapped value from the untouched source, never from canonical output.
     data = pd.DataFrame(index=frame.index)
     times = _times(frame[mapping.timestamp_column])
-    if times.dt.tz is None:
+    if plan.timezone_name == SOURCE_CLOCK:
+        if times.dt.tz is not None:
+            raise ValueError("source-clock timestamps must not carry timezone offsets")
+    elif times.dt.tz is None:
         times = times.dt.tz_localize(plan.timezone_name, ambiguous="raise", nonexistent="raise")
     else:
         times = times.dt.tz_convert(plan.timezone_name)
@@ -420,7 +424,10 @@ def _prepare_frame(
         data[name] = _numeric(frame[name], strip_thousands=plan.normalize_thousands_separators)
     for name in availability:
         parsed = _times(frame[name])
-        if parsed.dt.tz is None:
+        if plan.timezone_name == SOURCE_CLOCK:
+            if parsed.dt.tz is not None:
+                raise ValueError("source-clock issue times must not carry timezone offsets")
+        elif parsed.dt.tz is None:
             parsed = parsed.dt.tz_localize(
                 plan.timezone_name, ambiguous="raise", nonexistent="raise"
             )

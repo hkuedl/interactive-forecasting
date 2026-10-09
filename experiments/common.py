@@ -567,7 +567,7 @@ def build_context(
             availability=policies,
             confirmed=True,
         ),
-        plan=PreparationPlan(),
+        plan=PreparationPlan(timezone_name=settings["timezone"]),
         row_count=len(frame),
         time_start=frame["timestamp"].iloc[0].isoformat(),
         time_end=frame["timestamp"].iloc[-1].isoformat(),
@@ -807,7 +807,7 @@ def fingerprint(
         "src/interactive_forecasting/agents/transport.py",
         "src/interactive_forecasting/agents/contracts.py",
         "src/interactive_forecasting/agents/model_manager_policy.py",
-        "src/interactive_forecasting/agents/skills/model_manager_v1.md",
+        "src/interactive_forecasting/agents/skills/model_manager.md",
     ):
         implementation.update(relative.encode())
         implementation.update((ROOT / relative).read_bytes())

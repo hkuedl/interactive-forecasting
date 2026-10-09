@@ -43,10 +43,12 @@ def weighted_mae(labels: LabelVector, forecast: PointForecast, spec: MetricSpec)
     if spec.kind != "weighted" or spec.base_metric != "mae":
         raise ValueError("weighted MAE requires a weighted-MAE MetricSpec")
     assert spec.time_range is not None and spec.timezone_name is not None
-    zone = ZoneInfo(spec.timezone_name)
+    zone = None if spec.timezone_name == "source_clock" else ZoneInfo(spec.timezone_name)
     weights = np.ones(len(labels.keys), dtype=float)
     for index, key in enumerate(labels.keys):
-        local_time = key.target.astimezone(zone).time()
+        if (key.target.tzinfo is None) != (zone is None):
+            raise ValueError("metric timestamp mode differs from frozen task clock mode")
+        local_time = key.target.time() if zone is None else key.target.astimezone(zone).time()
         if spec.time_range.start_local <= local_time < spec.time_range.end_local:
             weights[index] = spec.time_range.weight
     prediction = np.asarray(forecast.values, dtype=float)

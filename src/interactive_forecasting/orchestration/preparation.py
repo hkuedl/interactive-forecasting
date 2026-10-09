@@ -36,6 +36,7 @@ from interactive_forecasting.orchestration.state_machine import (
     WorkflowStateMachine,
 )
 from interactive_forecasting.services import preparation as calculations
+from interactive_forecasting.services.data.core import SOURCE_CLOCK
 from interactive_forecasting.services.optimization.space import (
     canonical_research_space,
     space_for_capabilities,
@@ -555,7 +556,7 @@ class PreparationWorkflow:
             pd.read_csv(BytesIO(self.store.read_bytes(record.prepared.dataset.artifact)))[
                 "timestamp"
             ],
-            utc=True,
+            utc=record.prepared.dataset.timezone_name != SOURCE_CLOCK,
         )
         n = len(times)
         lead_steps = (

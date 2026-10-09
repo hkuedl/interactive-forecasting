@@ -336,6 +336,20 @@ class GuidanceCommand(SearchRecord):
     radius: float | None = Field(default=None, gt=0, le=1)
 
 
+def is_persistent_guidance(command: GuidanceCommand) -> bool:
+    """Classify commands by their actual SearchEngine effect, not their wording."""
+    return command.operation in {
+        "exclude_family",
+        "restrict_families",
+        "fix_parameter",
+        "narrow_parameter",
+        "restrict_choices",
+        "force_feature",
+        "disable_feature",
+        "local_refinement",
+    }
+
+
 class BackendConfig(SearchRecord):
     sampler: Literal["tpe"]
     seed: int = Field(ge=0, le=2**32 - 1)

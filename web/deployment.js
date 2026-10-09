@@ -46,7 +46,8 @@ async function loadDeployment() {
     const latest = sessions.at(-1) || null;
     const selectedSession = sessions.find(x => x.session_id === requestedSession) || latest;
     const state = {taskId: requestedTask, sessions, latest, selectedSession, forecast: null, original: null,
-      versions: [], adjustments: [], reference: null, variables: [], inspected: null};
+      versions: [], adjustments: [], reference: null, variables: [], inspected: null,
+      pendingPreview: null, previewError: null};
     if (selectedSession?.forecast_id) {
       const prefix = base + "/forecasts/" + selectedSession.forecast_id;
       const record = await request(prefix);
@@ -54,6 +55,14 @@ async function loadDeployment() {
       state.original = record.original;
       state.versions = await request(prefix + "/versions");
       state.adjustments = await request(prefix + "/adjustments");
+      if (selectedSession.session_id === latest?.session_id && selectedSession.pending_adjustment_id) {
+        try {
+          state.pendingPreview = await request(base + "/adjustments/" +
+            selectedSession.pending_adjustment_id + "/preview", "POST", {
+              session_id: selectedSession.session_id, expected_version: selectedSession.version
+            });
+        } catch (error) { state.previewError = error.message; }
+      }
       state.reference = await optionalDeployment(prefix + "/references", "not been generated");
       state.variables = await request(prefix + "/sensitivity/variables");
       state.inspected = state.versions.find(x => x.version_id === requestedVersion)
@@ -97,6 +106,19 @@ function deploymentValue(value, digits = 1) {
     minimumFractionDigits: digits});
 }
 function deploymentDate(value, options = {}) {
+  if (options.timeZone === "source_clock") {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+    if (!match) return String(value || "—");
+    const [, year, month, day, hour, minute] = match;
+    const names = ["January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"];
+    const monthName = names[Number(month) - 1];
+    const date = options.dateStyle === "long" ? `${monthName} ${Number(day)}, ${year}`
+      : `${monthName.slice(0, 3)} ${Number(day)}, ${year}`;
+    const time = `${hour}:${minute}`;
+    if (options.dateStyle && (options.timeStyle || options.hour)) return `${date}, ${time}`;
+    return options.dateStyle ? date : time;
+  }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value || "—");
   return new Intl.DateTimeFormat("en-US", options).format(parsed);
@@ -572,6 +594,30 @@ function renderDeploymentAdjustment(state) {
     parent.append(node("p", "Draft · " +
       deploymentAdjustmentDescription(pending, state.forecast.origin.timezone_name || "UTC") +
       ". No forecast value has changed.", "warning"));
+    if (state.previewError) parent.append(node("p", state.previewError, "warning"));
+    if (state.pendingPreview?.adjustment_id === pending.adjustment_id) {
+      const preview = state.pendingPreview;
+      const original = state.versions.find(item => item.version_id === preview.parent_version_id);
+      if (original) {
+        const before = predictionDisplay(original.prediction);
+        const after = predictionDisplay(preview.prediction);
+        parent.append(node("p", "Preview · " + preview.affected_timestamps.length +
+          " target time(s) affected. Review the change before confirming.", "meta"));
+        deploymentPlot(parent, "Current versus proposed forecast", [
+          {label: "Current " + before.label, values: before.central, color: "#2d648f"},
+          {label: "Proposed " + after.label, values: after.central, color: "#c77447", dash: "7 5"}
+        ], after.lower ? {lower: after.lower, upper: after.upper} : null,
+        {times: preview.prediction.keys.map(key => key.target),
+          timeZone: state.forecast.origin.timezone_name || "UTC", yLabel: "Load", xLabel: "Target time"});
+        tableView(parent, ["Affected time", "Current", "Proposed"],
+          preview.value_changes.map(change => [
+            deploymentDate(change.timestamp, {dateStyle: "medium", timeStyle: "short",
+              timeZone: state.forecast.origin.timezone_name || "UTC"}),
+            change.before.map(value => deploymentValue(value)).join(" · "),
+            change.after.map(value => deploymentValue(value)).join(" · ")
+          ]));
+      }
+    }
     const prefix = "/tasks/" + taskId + "/deployment/adjustments/" + pending.adjustment_id;
     if (latest && session.state === "ADJUSTMENT_DRAFT_PENDING")
       deploymentButton(parent, "Validate draft deterministically", () =>

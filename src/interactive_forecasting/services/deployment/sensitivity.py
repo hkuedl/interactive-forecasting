@@ -81,7 +81,9 @@ def run_sensitivity(
     frame = context.data.frame.copy(deep=True)
     future_values = dict(context.data.future)
     for when in historical:
-        match = (frame["series_id"] == "default") & (frame["timestamp"] == when)
+        match = (frame["series_id"] == forecast.prediction.keys[0].series_id) & (
+            frame["timestamp"] == when
+        )
         if int(match.sum()) != 1:
             raise ValueError("historical sensitivity input is missing")
         previous = float(frame.loc[match, request.variable].iloc[0])
@@ -104,7 +106,9 @@ def run_sensitivity(
         future_values,
         context.data.origin,
     )
-    perturbed = fitted.predict(temporary, forecast_examples(forecast.origin))
+    perturbed = fitted.predict(
+        temporary, forecast_examples(forecast.origin, forecast.prediction.keys[0].series_id)
+    )
     baseline = base.prediction
     if type(perturbed) is not type(baseline) or perturbed.keys != baseline.keys:
         raise ValueError("perturbed prediction does not align with original forecast")
